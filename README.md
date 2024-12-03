@@ -9,7 +9,7 @@ Removes leftover odf images based on an identifier
 
 ## How to
 ```console
-git clone https://github.com/yvarbanov/openstack-probe.git odf-cleanup
+git clone https://github.com/yvarbanov/odf-cleanup.git odf-cleanup
 python3 odf-cleanup.py
 ```
 
