@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
+"""Deletes ODF objects based on a LAB GUID using a hierarchical tree approach.
 
-"""
-name:             odf-cleanup.py
-description:      Deletes ODF objects based on LAB GUID using hierarchical tree approach
-author:           yvarbev@redhat.com
-version:          25.07.01
+Author:  yvarbev@redhat.com, gh:@yvarbanov
+Version: 25.07.01
 """
 
 import rbd
