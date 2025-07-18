@@ -548,39 +548,71 @@ class OdfCleaner:
             print(f"\nAbout to delete {len(removal_order)} RBD images for LAB GUID: {self.lab_guid}")
             print(f"Pool: {self.pool_name}")
             
-            # Initial cleanup attempt
+            # Execute initial cleanup attempt
             initial_failed_count = self._execute_removal_batch(removal_order, "Initial cleanup")
             
             # If we had failures, try trash purge and retry
             if initial_failed_count > 0:
-                print(f"\n{'='*60}")
-                print("RETRY STRATEGY - FAILURES DETECTED")
-                print("="*60)
-                print(f"Initial cleanup had {initial_failed_count} failures")
+                print(f"\nRETRY STRATEGY - {initial_failed_count} FAILURES DETECTED")
                 print("Attempting trash purge to clear blocking items...")
                 
-                if self._purge_expired_trash():
-                    print("Retrying failed items after trash purge...")
+                # Get the failed items from the last attempt
+                failed_items = [item for item in removal_order 
+                              if item.name in self.removal_stats['failed_removals']]
+                
+                # Attempt trash purge (non-fatal if it fails)
+                purge_success = self._purge_expired_trash()
+                
+                # After purge, check which failed items are actually still present
+                print("Checking which failed items still exist after purge...")
+                still_failed_items = []
+                items_cleaned_by_purge = []
+                
+                for item in failed_items:
+                    if self._item_still_exists(item):
+                        still_failed_items.append(item)
+                    else:
+                        items_cleaned_by_purge.append(item)
+                        # Update removal stats for items cleaned by purge
+                        if item.image_type == ImageType.TRASH_VOLUME:
+                            self.removal_stats['trash_items_removed'] += 1
+                        elif item.image_type == ImageType.CSI_SNAP:
+                            self.removal_stats['csi_snaps_removed'] += 1
+                        elif item.image_type == ImageType.VOLUME:
+                            self.removal_stats['images_removed'] += 1
+                        # Remove from failed_removals list since it's now cleaned up
+                        if item.name in self.removal_stats['failed_removals']:
+                            self.removal_stats['failed_removals'].remove(item.name)
+                
+                if items_cleaned_by_purge:
+                    print(f"Trash purge cleaned up {len(items_cleaned_by_purge)} items:")
+                    for item in items_cleaned_by_purge:
+                        print(f"  - {item.name} ({item.image_type.value})")
+                
+                if still_failed_items:
+                    print(f"Retrying {len(still_failed_items)} items that still exist...")
+                    # Clear failed removals for items we're about to retry
+                    for item in still_failed_items:
+                        if item.name in self.removal_stats['failed_removals']:
+                            self.removal_stats['failed_removals'].remove(item.name)
                     
-                    # Get the failed items from the last attempt
-                    failed_items = [item for item in removal_order 
-                                  if item.name in self.removal_stats['failed_removals']]
+                    retry_failed_count = self._execute_removal_batch(still_failed_items, "Post-purge retry")
                     
-                    if failed_items:
-                        # Clear previous failures for retry
-                        self.removal_stats['failed_removals'] = []
-                        
-                        # Retry failed items
-                        retry_failed_count = self._execute_removal_batch(failed_items, "Retry after purge")
-                        
-                        if retry_failed_count == 0:
-                            print("✓ All previously failed items successfully removed after trash purge!")
-                        else:
-                            print(f"⚠ {retry_failed_count} items still failed after trash purge and retry")
+                    if retry_failed_count == 0:
+                        print("All remaining failed items successfully removed after trash purge!")
+                    else:
+                        print(f"Warning: {retry_failed_count} items still failed after trash purge and retry")
                 else:
-                    print("Trash purge failed, cannot retry failed items")
+                    print("All failed items were cleaned up by trash purge!")
+                    retry_failed_count = 0
+            
+                    # Final verification only if we have complete success (no failed removals or restorations)
+        final_failure_count = len(self.removal_stats['failed_removals'])
+        restoration_failure_count = len(self._failed_trash_restorations)
         
-        self._generate_report()
+        if final_failure_count == 0 and restoration_failure_count == 0:
+            self._final_verification()
+            self._generate_report()
     
     def _execute_removal_batch(self, items: List[OdfImage], batch_name: str) -> int:
         """Execute removal for a batch of items and return count of failures"""
@@ -631,6 +663,24 @@ class OdfCleaner:
             print(f"  WARNING: Trash purge failed: {e}")
             print("  Cannot retry failed items")
             return False
+
+    def _item_still_exists(self, item: OdfImage) -> bool:
+        """Check if an OdfImage item still exists in the cluster"""
+        try:
+            if item.image_type == ImageType.TRASH_VOLUME:
+                # Check if item still exists in trash
+                trash_list = list(rbd.RBD().trash_list(self.ioctx))
+                return any(trash_item['name'] == item.name for trash_item in trash_list)
+            else:
+                # Check if item still exists in active pool (volumes and csi-snaps)
+                active_images = rbd.RBD().list(self.ioctx)
+                return item.name in active_images
+        except Exception as e:
+            debug = os.environ.get('DEBUG', 'false').lower() in ['true', '1', 'yes']
+            if debug:
+                print(f"  Warning: Error checking existence of {item.name}: {e}")
+            # If we can't check, assume it still exists to be safe
+            return True
     
     def _needs_flattening_for_dependencies(self, image: OdfImage) -> bool:
         """Check if image needs flattening based on dependency analysis"""
@@ -899,23 +949,71 @@ class OdfCleaner:
                 remaining_objects.extend([f"ACTIVE: {img}" for img in remaining_active])
             
             # Check trash items
-            trash_items = rbd.RBD().trash_list(self.ioctx)
+            trash_items = list(rbd.RBD().trash_list(self.ioctx))
             remaining_trash = [item['name'] for item in trash_items if self.lab_guid in item['name']]
             if remaining_trash:
                 remaining_objects.extend([f"TRASH: {item}" for item in remaining_trash])
             
-            # Report results
+            # Report results and handle remaining objects
             if remaining_objects:
-                print("  WARNING: Found remaining objects with GUID:")
+                print(f"  WARNING: Found {len(remaining_objects)} remaining objects with GUID:")
                 for obj in remaining_objects:
                     print(f"    - {obj}")
-                print("  These objects may need manual investigation")
+                
+                print("  Attempting final cleanup of remaining objects...")
+                
+                # Create OdfImage objects for remaining items and attempt cleanup
+                final_cleanup_items = []
+                
+                # Process remaining active images
+                for img_name in remaining_active:
+                    try:
+                        # Determine if it's a CSI snap or regular volume
+                        image_type = ImageType.CSI_SNAP if 'csi-snap' in img_name else ImageType.VOLUME
+                        image = self._create_image_from_rbd(img_name, image_type)
+                        if image:
+                            final_cleanup_items.append(image)
+                    except Exception as e:
+                        print(f"    Warning: Could not process {img_name}: {e}")
+                
+                # Process remaining trash items
+                for item_name in remaining_trash:
+                    try:
+                        # Find the trash item details
+                        trash_item = next((item for item in trash_items if item['name'] == item_name), None)
+                        if trash_item:
+                            # Determine if it's a CSI snap or regular volume in trash
+                            image_type = ImageType.TRASH_CSI_SNAP if 'csi-snap' in item_name else ImageType.TRASH_VOLUME
+                            image = self._create_trash_image(trash_item, image_type)
+                            if image:
+                                final_cleanup_items.append(image)
+                    except Exception as e:
+                        print(f"    Warning: Could not process trash item {item_name}: {e}")
+                
+                if final_cleanup_items:
+                    print(f"  Attempting cleanup of {len(final_cleanup_items)} remaining items...")
+                    
+                    # Clear any previous failed removals for final attempt
+                    self.removal_stats['failed_removals'] = []
+                    
+                    # Attempt final cleanup
+                    final_failed_count = self._execute_removal_batch(final_cleanup_items, "Final verification cleanup")
+                    
+                    if final_failed_count == 0:
+                        print("  SUCCESS: All remaining objects successfully cleaned up!")
+                        print(f"  Cleanup completed successfully for LAB GUID: {self.lab_guid}")
+                    else:
+                        print(f"  WARNING: {final_failed_count} objects still remain after final cleanup attempt")
+                        print("  These objects may need manual investigation")
+                else:
+                    print("  Could not create cleanup objects for remaining items")
             else:
                 print("  SUCCESS: No objects with GUID found in pool")
                 print(f"  Cleanup completed successfully for LAB GUID: {self.lab_guid}")
                 
         except Exception as e:
             print(f"  ERROR: Could not perform final verification: {e}")
+            print("  Continuing with cleanup report...")
     
     def cleanup(self):
         """Main cleanup orchestration"""
