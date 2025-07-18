@@ -418,7 +418,11 @@ class OdfCleaner:
                     with rbd.Image(self.ioctx, img_name) as img:
                         parent_info = img.parent_info()
                         if parent_info:
-                            parent_pool, parent_image = parent_info
+                            # Handle variable return format from parent_info()
+                            if len(parent_info) >= 2:
+                                parent_pool, parent_image = parent_info[0], parent_info[1]
+                            else:
+                                continue  # Skip if parent_info format is unexpected
                             
                             # Check if parent is in trash
                             if self._is_image_in_trash(parent_image):
@@ -533,7 +537,9 @@ class OdfCleaner:
                                 is_protected = True
                                 break
                         except Exception as snap_err:
-                            print(f"    Warning: Could not check protection for snapshot {snap['name']}: {snap_err}")
+                            # Only show warning for unexpected errors, not "image not found"
+                            if "RBD image not found" not in str(snap_err):
+                                print(f"    Warning: Could not check protection for snapshot {snap['name']}: {snap_err}")
                 except Exception as snap_list_err:
                     print(f"    Warning: Could not list snapshots for {img_name}: {snap_list_err}")
                 
@@ -806,7 +812,16 @@ class OdfCleaner:
                 
                 if active_descendants:
                     print(f"    ERROR: Image {image.name} still has {len(active_descendants)} active descendants")
-                    print(f"    Descendants: {[d.get('name', 'unknown') for d in active_descendants]}")
+                    # Try multiple ways to extract descendant names
+                    desc_names = []
+                    for d in active_descendants:
+                        if isinstance(d, dict):
+                            name = d.get('name') or d.get('image') or d.get('child') or str(d)
+                        else:
+                            name = str(d)
+                        desc_names.append(name)
+                    print(f"    Descendants: {desc_names}")
+                    print(f"    Raw descendant data: {active_descendants}")
                     return False
                 
                 # Remove internal snapshots first
