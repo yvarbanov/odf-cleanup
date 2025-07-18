@@ -620,29 +620,10 @@ class OdfCleaner:
         print(f"\nPurging expired trash items from pool '{self.pool_name}'...")
         
         try:
-            # Get count of trash items before purge
-            trash_items_before = len(rbd.RBD().trash_list(self.ioctx))
-            print(f"  Found {trash_items_before} items in trash before purge")
-            
-            if trash_items_before == 0:
-                print("  No trash items to purge")
-                return True
-            
             # Execute trash purge
             print("  Executing trash purge...")
-            rbd.RBD().trash_purge(self.ioctx, 0)  # 0 = purge all expired items
-            
-            # Check how many items remain
-            trash_items_after = len(rbd.RBD().trash_list(self.ioctx))
-            purged_count = trash_items_before - trash_items_after
-            
-            if purged_count > 0:
-                print(f"  SUCCESS: Purged {purged_count} expired trash items")
-            else:
-                print("  No expired items were purged (items may still be within retention period)")
-            
-            if trash_items_after > 0:
-                print(f"  {trash_items_after} items remain in trash (not yet expired or in use)")
+            rbd.RBD().trash_purge(self.ioctx, 0)
+            print("  Trash purge completed")
             
             return True
             
