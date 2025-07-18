@@ -133,36 +133,27 @@ class OdfTree:
     
     def _display_image(self, image: OdfImage, prefix: str, is_last: bool, show_details: bool):
         """Recursively display an image and its children"""
-        # Tree structure symbols
         current_prefix = "└── " if is_last else "├── "
-        print(f"{prefix}{current_prefix}{image.name}")
+        status = " [TRASH]" if image.in_trash else ""
+        print(f"{prefix}{current_prefix}{image.name}{status}")
         
         if show_details:
             detail_prefix = prefix + ("    " if is_last else "│   ")
-            print(f"{detail_prefix}    Type: {image.image_type.value}")
+            details = [f"Type: {image.image_type.value}"]
             if image.size:
-                print(f"{detail_prefix}    Size: {self._format_size(image.size)}")
-            if image.creation_time and image.creation_time != "Unknown":
-                print(f"{detail_prefix}    Created: {image.creation_time}")
-            elif image.creation_time == "Unknown":
-                print(f"{detail_prefix}    Created: Unknown (metadata unavailable)")
+                details.append(f"Size: {self._format_size(image.size)}")
             if image.parent_name:
-                print(f"{detail_prefix}    Parent: {image.parent_name}")
-            if image.in_trash:
-                print(f"{detail_prefix}    Status: IN TRASH (ID: {image.trash_id})")
+                details.append(f"Parent: {image.parent_name}")
             if image.internal_snaps:
                 snap_status = "protected" if image.is_protected else "unprotected"
-                print(f"{detail_prefix}    Internal Snaps: {len(image.internal_snaps)} ({snap_status})")
-            if image.is_protected and not image.internal_snaps:
-                print(f"{detail_prefix}    Protected: YES")
-            
-            # Show multi-phase operation requirements
-            if image.depends_on_trash:
-                print(f"{detail_prefix}    WARNING: Depends on trash items")
+                details.append(f"Snaps: {len(image.internal_snaps)} ({snap_status})")
             if image.needs_restoration:
-                print(f"{detail_prefix}    RESTORE: Needs restoration: {image.restoration_reason}")
+                details.append(f"RESTORE: {image.restoration_reason}")
             if image.needs_flattening:
-                print(f"{detail_prefix}    FLATTEN: Needs flattening to remove dependencies")
+                details.append("FLATTEN: Required")
+            
+            for detail in details:
+                print(f"{detail_prefix}    {detail}")
         
         # Display children
         child_prefix = prefix + ("    " if is_last else "│   ")
@@ -215,16 +206,15 @@ class OdfCleaner:
             self.lab_guid = os.environ['CL_LAB']
             
             cluster = rados.Rados(conffile=conf_file, conf=dict(keyring=keyring))
-            print(f"Connecting to ODF cluster...")
-            print(f"librados version: {cluster.version()}")
-            print(f"Monitor hosts: {cluster.conf_get('mon host')}")
-            
             cluster.connect()
-            print(f"Connected! Cluster ID: {cluster.get_fsid()}")
-            print(f"Pool: {self.pool_name}")
-            print(f"LAB GUID: {self.lab_guid}")
-            
             self.ioctx = cluster.open_ioctx(self.pool_name)
+            
+            debug = os.environ.get('DEBUG', 'false').lower() in ['true', '1', 'yes']
+            if debug:
+                print(f"Connected to ODF cluster: {cluster.get_fsid()}")
+                print(f"librados version: {cluster.version()}")
+                print(f"Monitor hosts: {cluster.conf_get('mon host')}")
+            
             return True
             
         except KeyError as e:
@@ -237,127 +227,96 @@ class OdfCleaner:
     def discover_images(self):
         """Discover all images, csi-snaps, and trash items related to LAB GUID"""
         print(f"\nDiscovering RBD images for LAB GUID: {self.lab_guid}")
-        print("-" * 50)
-        
-        # Clear cache for fresh analysis
         self._clear_dependency_cache()
         
-        # Phase 1: Find images in pool containing LAB GUID
+        # Discover all types
         pool_images = self._find_pool_images()
-        print(f"Found {len(pool_images)} images in pool")
-        
-        # Phase 2: Find images in trash containing LAB GUID
         trash_images = self._find_trash_images()
-        print(f"Found {len(trash_images)} images in trash")
-        
-        # Phase 3: Find csi-snaps related to LAB GUID
         csi_snaps = self._find_related_csi_snaps()
-        print(f"Found {len(csi_snaps)} related csi-snaps")
         
-        # Phase 4: Analyze dependencies (run once, cache results)
-        print(f"\n  Analyzing active->trash dependencies...")
+        # Analyze dependencies and find trash csi-snaps
         self._active_to_trash_dependencies = self._find_active_to_trash_dependencies()
-        
-        # Phase 5: Find csi-snaps in trash (using cached dependency analysis)
         trash_csi_snaps = self._find_trash_csi_snaps()
-        print(f"Found {len(trash_csi_snaps)} csi-snaps in trash")
         
-        # Phase 6: Create restoration plan (using cached dependency analysis)
-        self._analyze_dependencies_and_plan()
+        # Print summary
+        total = len(pool_images) + len(trash_images) + len(csi_snaps) + len(trash_csi_snaps)
+        print(f"Found: {len(pool_images)} volumes, {len(csi_snaps)} csi-snaps, {len(trash_images)} trash volumes, {len(trash_csi_snaps)} trash csi-snaps")
         
-        # Build tree images
-        all_discovered = pool_images + trash_images + csi_snaps + trash_csi_snaps
-        print(f"\nTotal images discovered: {len(all_discovered)}")
-        
-        return all_discovered
-    
-    def _analyze_dependencies_and_plan(self):
-        """Create restoration plan using cached dependency analysis"""
-        
-        # Use cached dependency analysis
-        dependencies = self._active_to_trash_dependencies or {}
-        
-        if dependencies:
-            print(f"\n  WARNING: COMPLEX DEPENDENCIES DETECTED:")
-            print(f"  Found {len(dependencies)} active images with trash dependencies")
-            
-            # Generate restoration plan
-            restoration_plan = self._get_restoration_plan(dependencies)
-            
-            print(f"\n  RESTORATION PLAN REQUIRED:")
-            print(f"  The following operations will be needed:")
-            
-            for i, step in enumerate(restoration_plan, 1):
-                print(f"    {i:2d}. {step['action'].upper()}: {step['target']}")
-                print(f"        Reason: {step['reason']}")
-            
-            print(f"\n  WARNING: Multi-phase cleanup required!")
-            print(f"  Some images must be restored, flattened, then deleted.")
-            
+        # Check dependencies
+        if self._active_to_trash_dependencies:
+            print(f"WARNING: {len(self._active_to_trash_dependencies)} images have trash dependencies")
         else:
-            print(f"  SUCCESS: No active->trash dependencies found")
-            print(f"  Simple cleanup order can be used")
+            print("No active->trash dependencies found")
+        
+        return pool_images + trash_images + csi_snaps + trash_csi_snaps
     
-    def _find_pool_images(self) -> List[OdfImage]:
-        """Find images in pool containing LAB GUID"""
+    def _find_images_by_criteria(self, source: str, guid_check: bool = True, csi_only: bool = False) -> List[OdfImage]:
+        """Generic method to find images based on criteria"""
         images = []
         try:
-            all_rbd_images = rbd.RBD().list(self.ioctx)
-            lab_rbd_images = [img for img in all_rbd_images if self.lab_guid in img]
+            if source == "pool":
+                items = rbd.RBD().list(self.ioctx)
+                items = [{"name": name, "id": None} for name in items]
+            else:  # trash
+                items = rbd.RBD().trash_list(self.ioctx)
             
-            for img_name in lab_rbd_images:
-                if 'csi-snap' not in img_name:  # Regular images, not csi-snaps
-                    image = self._create_image_from_rbd(img_name, ImageType.VOLUME)
-                    if image:
-                        images.append(image)
-                        
-        except Exception as e:
-            print(f"Error finding pool images: {e}")
-        
-        return images
-    
-    def _find_trash_images(self) -> List[OdfImage]:
-        """Find images in trash containing LAB GUID"""
-        images = []
-        try:
-            trash_items = rbd.RBD().trash_list(self.ioctx)
-            lab_trash = [item for item in trash_items if self.lab_guid in item['name']]
+            # Filter by criteria
+            filtered_items = []
+            for item in items:
+                name = item["name"]
+                if csi_only and 'csi-snap' not in name:
+                    continue
+                if not csi_only and 'csi-snap' in name:
+                    continue
+                if guid_check and self.lab_guid not in name:
+                    # For csi-snaps, check parent relationship
+                    if 'csi-snap' in name and source == "pool":
+                        try:
+                            with rbd.Image(self.ioctx, name) as img:
+                                parent_info = img.parent_info()
+                                if parent_info and self.lab_guid in parent_info[1]:
+                                    filtered_items.append(item)
+                        except:
+                            pass
+                    continue
+                filtered_items.append(item)
             
-            for item in lab_trash:
-                if 'csi-snap' not in item['name']:  # Regular images, not csi-snaps
-                    image = self._create_trash_image(item, ImageType.TRASH_VOLUME)
-                    if image:
-                        images.append(image)
-                        
-        except Exception as e:
-            print(f"Error finding trash images: {e}")
-        
-        return images
-    
-    def _find_related_csi_snaps(self) -> List[OdfImage]:
-        """Find csi-snaps whose parents contain LAB GUID"""
-        csi_snaps = []
-        try:
-            all_rbd_images = rbd.RBD().list(self.ioctx)
-            csi_rbd_images = [img for img in all_rbd_images if 'csi-snap' in img]
-            
-            for csi_name in csi_rbd_images:
-                try:
-                    with rbd.Image(self.ioctx, csi_name) as img:
-                        parent_info = img.parent_info()
-                        if parent_info and self.lab_guid in parent_info[1]:
-                            image = self._create_image_from_rbd(csi_name, ImageType.CSI_SNAP)
-                            if image:
-                                image.parent_name = parent_info[1]
-                                csi_snaps.append(image)
-                except:
-                    # No parent or other issue
-                    pass
+            # Create image objects
+            for item in filtered_items:
+                if source == "pool":
+                    image_type = ImageType.CSI_SNAP if 'csi-snap' in item["name"] else ImageType.VOLUME
+                    image = self._create_image_from_rbd(item["name"], image_type)
+                    if image and 'csi-snap' in item["name"]:
+                        try:
+                            with rbd.Image(self.ioctx, item["name"]) as img:
+                                parent_info = img.parent_info()
+                                if parent_info:
+                                    image.parent_name = parent_info[1]
+                        except:
+                            pass
+                else:  # trash
+                    image_type = ImageType.TRASH_CSI_SNAP if 'csi-snap' in item["name"] else ImageType.TRASH_VOLUME
+                    image = self._create_trash_image(item, image_type)
+                
+                if image:
+                    images.append(image)
                     
         except Exception as e:
-            print(f"Error finding csi-snaps: {e}")
+            print(f"Error finding {source} images: {e}")
         
-        return csi_snaps
+        return images
+
+    def _find_pool_images(self) -> List[OdfImage]:
+        """Find images in pool containing LAB GUID"""
+        return self._find_images_by_criteria("pool", guid_check=True, csi_only=False)
+
+    def _find_trash_images(self) -> List[OdfImage]:
+        """Find images in trash containing LAB GUID"""
+        return self._find_images_by_criteria("trash", guid_check=True, csi_only=False)
+
+    def _find_related_csi_snaps(self) -> List[OdfImage]:
+        """Find csi-snaps whose parents contain LAB GUID"""
+        return self._find_images_by_criteria("pool", guid_check=True, csi_only=True)
     
     def _find_trash_csi_snaps(self) -> List[OdfImage]:
         """Find csi-snaps in trash that have active dependencies"""
@@ -404,34 +363,24 @@ class OdfCleaner:
     
     def _find_active_to_trash_dependencies(self) -> Dict[str, List[str]]:
         """Find active images that depend on trash items"""
-        dependencies = {}  # {active_image_name: [list_of_trash_parent_names]}
+        dependencies = {}
         
         try:
-            # Get all active images related to this LAB
             all_rbd_images = rbd.RBD().list(self.ioctx)
             lab_active_images = [img for img in all_rbd_images if self.lab_guid in img]
-            
-            print(f"    Checking {len(lab_active_images)} active LAB images for trash dependencies...")
             
             for img_name in lab_active_images:
                 try:
                     with rbd.Image(self.ioctx, img_name) as img:
                         parent_info = img.parent_info()
-                        if parent_info:
-                            # Handle variable return format from parent_info()
-                            if len(parent_info) >= 2:
-                                parent_pool, parent_image = parent_info[0], parent_info[1]
-                            else:
-                                continue  # Skip if parent_info format is unexpected
-                            
-                            # Check if parent is in trash
+                        if parent_info and len(parent_info) >= 2:
+                            parent_pool, parent_image = parent_info[0], parent_info[1]
                             if self._is_image_in_trash(parent_image):
                                 if img_name not in dependencies:
                                     dependencies[img_name] = []
                                 dependencies[img_name].append(parent_image)
-                                print(f"      Found dependency: {img_name} -> {parent_image} (in trash)")
                                 
-                        # Also check for clone dependencies
+                        # Check for clone dependencies
                         descendants = list(img.list_descendants())
                         for desc in descendants:
                             if desc.get('trash', False):
@@ -440,15 +389,15 @@ class OdfCleaner:
                                     if img_name not in dependencies:
                                         dependencies[img_name] = []
                                     dependencies[img_name].append(desc_name)
-                                    print(f"      Found reverse dependency: {img_name} <- {desc_name} (in trash)")
                                     
                 except Exception as img_err:
-                    print(f"      Warning: Could not check dependencies for {img_name}: {img_err}")
+                    debug = os.environ.get('DEBUG', 'false').lower() in ['true', '1', 'yes']
+                    if debug:
+                        print(f"Warning: Could not check dependencies for {img_name}: {img_err}")
                     
         except Exception as e:
-            print(f"Warning: Could not analyze active->trash dependencies: {e}")
+            print(f"Warning: Could not analyze dependencies: {e}")
         
-        print(f"    Found {len(dependencies)} active images with trash dependencies")
         return dependencies
     
     def _is_image_in_trash(self, image_name: str) -> bool:
