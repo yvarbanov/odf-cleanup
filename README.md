@@ -106,6 +106,7 @@ def _is_trash_item_referenced(self, trash_item: dict, active_dependencies: Dict[
 ## How to
 ```console
 git clone https://github.com/yvarbanov/odf-cleanup.git odf-cleanup
+source env.sh
 python3 odf-cleanup.py
 ```
 
