@@ -601,29 +601,108 @@ class OdfCleaner:
             print(f"\nAbout to delete {len(removal_order)} RBD images for LAB GUID: {self.lab_guid}")
             print(f"Pool: {self.pool_name}")
             
-            print(f"\nExecuting cleanup for {len(removal_order)} items...")
+            # Initial cleanup attempt
+            initial_failed_count = self._execute_removal_batch(removal_order, "Initial cleanup")
             
-            for i, image in enumerate(removal_order, 1):
-                print(f"\n[{i}/{len(removal_order)}] Processing: {image.name}")
+            # If we had failures, try trash purge and retry
+            if initial_failed_count > 0:
+                print(f"\n{'='*60}")
+                print("RETRY STRATEGY - FAILURES DETECTED")
+                print("="*60)
+                print(f"Initial cleanup had {initial_failed_count} failures")
+                print("Attempting trash purge to clear blocking items...")
                 
-                # Mark images that need flattening based on dependencies
-                if self._needs_flattening_for_dependencies(image):
-                    image.needs_flattening = True
-                    image.restoration_reason = "Remove dependencies before deletion"
-                
-                # Attempt removal
-                success = self._remove_image(image)
-                if success:
-                    self._update_removal_stats(image)
-                    print(f"  SUCCESS: Removed {image.name}")
+                if self._purge_expired_trash():
+                    print("Retrying failed items after trash purge...")
+                    
+                    # Get the failed items from the last attempt
+                    failed_items = [item for item in removal_order 
+                                  if item.name in self.removal_stats['failed_removals']]
+                    
+                    if failed_items:
+                        # Clear previous failures for retry
+                        self.removal_stats['failed_removals'] = []
+                        
+                        # Retry failed items
+                        retry_failed_count = self._execute_removal_batch(failed_items, "Retry after purge")
+                        
+                        if retry_failed_count == 0:
+                            print("✓ All previously failed items successfully removed after trash purge!")
+                        else:
+                            print(f"⚠ {retry_failed_count} items still failed after trash purge and retry")
                 else:
-                    self.removal_stats['failed_removals'].append(image.name)
-                    print(f"  FAILED: Could not remove {image.name}")
-                
-                # Brief pause between operations
-                time.sleep(3)
+                    print("Trash purge failed, cannot retry failed items")
         
         self._generate_report()
+    
+    def _execute_removal_batch(self, items: List[OdfImage], batch_name: str) -> int:
+        """Execute removal for a batch of items and return count of failures"""
+        print(f"\n{batch_name} for {len(items)} items...")
+        
+        initial_failure_count = len(self.removal_stats['failed_removals'])
+        
+        for i, image in enumerate(items, 1):
+            print(f"\n[{i}/{len(items)}] Processing: {image.name}")
+            
+            # Mark images that need flattening based on dependencies
+            if self._needs_flattening_for_dependencies(image):
+                image.needs_flattening = True
+                image.restoration_reason = "Remove dependencies before deletion"
+            
+            # Attempt removal
+            success = self._remove_image(image)
+            if success:
+                self._update_removal_stats(image)
+                print(f"  SUCCESS: Removed {image.name}")
+            else:
+                # Only add to failed_removals if not already there
+                if image.name not in self.removal_stats['failed_removals']:
+                    self.removal_stats['failed_removals'].append(image.name)
+                print(f"  FAILED: Could not remove {image.name}")
+            
+            # Brief pause between operations
+            time.sleep(3)
+        
+        current_failure_count = len(self.removal_stats['failed_removals'])
+        batch_failures = current_failure_count - initial_failure_count
+        
+        return batch_failures
+    
+    def _purge_expired_trash(self) -> bool:
+        """Purge expired trash items to prevent blocking cleanup operations"""
+        print(f"\nPurging expired trash items from pool '{self.pool_name}'...")
+        
+        try:
+            # Get count of trash items before purge
+            trash_items_before = len(rbd.RBD().trash_list(self.ioctx))
+            print(f"  Found {trash_items_before} items in trash before purge")
+            
+            if trash_items_before == 0:
+                print("  No trash items to purge")
+                return True
+            
+            # Execute trash purge
+            print("  Executing trash purge...")
+            rbd.RBD().trash_purge(self.ioctx, 0)  # 0 = purge all expired items
+            
+            # Check how many items remain
+            trash_items_after = len(rbd.RBD().trash_list(self.ioctx))
+            purged_count = trash_items_before - trash_items_after
+            
+            if purged_count > 0:
+                print(f"  SUCCESS: Purged {purged_count} expired trash items")
+            else:
+                print("  No expired items were purged (items may still be within retention period)")
+            
+            if trash_items_after > 0:
+                print(f"  {trash_items_after} items remain in trash (not yet expired or in use)")
+            
+            return True
+            
+        except Exception as e:
+            print(f"  WARNING: Trash purge failed: {e}")
+            print("  Cannot retry failed items")
+            return False
     
     def _needs_flattening_for_dependencies(self, image: OdfImage) -> bool:
         """Check if image needs flattening based on dependency analysis"""
@@ -867,7 +946,48 @@ class OdfCleaner:
             for item in self._failed_trash_restorations:
                 print(f"  - {item}")
         
+        # Final verification if cleanup was successful
+        if len(self.removal_stats['failed_removals']) == 0 and len(self._failed_trash_restorations) == 0:
+            print("\n" + "-" * 80)
+            self._final_verification()
+        
         print("="*80)
+    
+    def _final_verification(self):
+        """Final verification that no objects with the GUID remain in the pool"""
+        print("FINAL VERIFICATION - Checking for remaining objects...")
+        
+        if self.dry_run:
+            print("  DRY RUN: Would verify no objects remain with GUID")
+            return
+        
+        try:
+            remaining_objects = []
+            
+            # Check active pool images
+            all_rbd_images = rbd.RBD().list(self.ioctx)
+            remaining_active = [img for img in all_rbd_images if self.lab_guid in img]
+            if remaining_active:
+                remaining_objects.extend([f"ACTIVE: {img}" for img in remaining_active])
+            
+            # Check trash items
+            trash_items = rbd.RBD().trash_list(self.ioctx)
+            remaining_trash = [item['name'] for item in trash_items if self.lab_guid in item['name']]
+            if remaining_trash:
+                remaining_objects.extend([f"TRASH: {item}" for item in remaining_trash])
+            
+            # Report results
+            if remaining_objects:
+                print("  WARNING: Found remaining objects with GUID:")
+                for obj in remaining_objects:
+                    print(f"    - {obj}")
+                print("  These objects may need manual investigation")
+            else:
+                print("  SUCCESS: No objects with GUID found in pool")
+                print(f"  Cleanup completed successfully for LAB GUID: {self.lab_guid}")
+                
+        except Exception as e:
+            print(f"  ERROR: Could not perform final verification: {e}")
     
     def cleanup(self):
         """Main cleanup orchestration"""

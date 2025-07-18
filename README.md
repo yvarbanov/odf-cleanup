@@ -97,6 +97,110 @@ def _is_trash_item_referenced(self, trash_item: dict, active_dependencies: Dict[
     return False
 ```
 
+## Cleanup Execution Flow
+
+The script uses a **two-phase execution strategy** with automatic retry and verification:
+
+### Phase 1: Initial Cleanup Attempt
+```python
+def execute_cleanup(self, removal_order: List[OdfImage]):
+    # Initial cleanup attempt
+    initial_failed_count = self._execute_removal_batch(removal_order, "Initial cleanup")
+```
+
+The script first attempts to remove all discovered items in the calculated dependency order (children → parents).
+
+### Phase 2: Retry (Only if failures occur)
+```python
+    # If we had failures, try trash purge and retry
+    if initial_failed_count > 0:
+        print("RETRY STRATEGY - FAILURES DETECTED")
+        print("Attempting trash purge to clear blocking items...")
+        
+        if self._purge_expired_trash():
+            # Get only the failed items from the last attempt
+            failed_items = [item for item in removal_order 
+                          if item.name in self.removal_stats['failed_removals']]
+            
+            # Clear previous failures for retry
+            self.removal_stats['failed_removals'] = []
+            
+            # Retry only failed items
+            retry_failed_count = self._execute_removal_batch(failed_items, "Retry after purge")
+```
+
+**Key Benefits:**
+- **Performance**: Only runs trash purge when actually needed
+- **Efficiency**: Only retries items that actually failed
+- **Resilience**: Handles blocking trash dependencies automatically
+
+### Phase 3: Final Verification (Only on complete success)
+```python
+def _final_verification(self):
+    """Final verification that no objects with the GUID remain in the pool"""
+    
+    # Check active pool images
+    all_rbd_images = rbd.RBD().list(self.ioctx)
+    remaining_active = [img for img in all_rbd_images if self.lab_guid in img]
+    
+    # Check trash items  
+    trash_items = rbd.RBD().trash_list(self.ioctx)
+    remaining_trash = [item['name'] for item in trash_items if self.lab_guid in item['name']]
+```
+
+**Final verification only runs when:**
+- Zero failed removals
+- Zero failed trash restorations  
+- Complete cleanup success
+
+### Complete Execution Flow
+```
+execute_cleanup()
+├── _execute_removal_batch() [Initial attempt]  
+├── Check failures?
+│   ├── No failures → _final_verification() → Done
+│   └── Failures detected
+│       ├── _purge_expired_trash()
+│       ├── _execute_removal_batch() [Retry failed items]
+│       └── _final_verification() [If retry successful]
+└── _generate_report()
+```
+
+### Sample Output
+
+**Successful first attempt:**
+```
+Initial cleanup for 5 items...
+[All items removed successfully]
+
+FINAL VERIFICATION - Checking for remaining objects...
+SUCCESS: No objects with GUID found in pool
+Cleanup completed successfully for LAB GUID: abc123
+```
+
+**With intelligent retry:**
+```
+Initial cleanup for 5 items...
+[2 items fail due to blocking dependencies]
+
+============================================================
+RETRY STRATEGY - FAILURES DETECTED  
+============================================================
+Initial cleanup had 2 failures
+Attempting trash purge to clear blocking items...
+
+Purging expired trash items from pool 'ocpv-tenants'...
+  SUCCESS: Purged 3 expired trash items
+
+Retry after purge for 2 items...
+[Previously failed items now succeed]
+
+All previously failed items successfully removed after trash purge!
+
+FINAL VERIFICATION - Checking for remaining objects...
+SUCCESS: No objects with GUID found in pool
+```
+
 ## Requires
 - python3.6
 - ceph/odf tools 
