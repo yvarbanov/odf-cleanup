@@ -228,9 +228,9 @@ class OdfCleaner:
         self._clear_dependency_cache()
         
         # Discover all types
-        pool_images = self._find_pool_images()
-        trash_images = self._find_trash_images()
-        csi_snaps = self._find_related_csi_snaps()
+        pool_images = self._find_images_by_criteria("pool", guid_check=True, csi_only=False)
+        trash_images = self._find_images_by_criteria("trash", guid_check=True, csi_only=False)
+        csi_snaps = self._find_images_by_criteria("pool", guid_check=True, csi_only=True)
         
         # Analyze dependencies and find trash csi-snaps
         self._active_to_trash_dependencies = self._find_active_to_trash_dependencies()
@@ -303,18 +303,6 @@ class OdfCleaner:
             print(f"Error finding {source} images: {e}")
         
         return images
-
-    def _find_pool_images(self) -> List[OdfImage]:
-        """Find images in pool containing LAB GUID"""
-        return self._find_images_by_criteria("pool", guid_check=True, csi_only=False)
-
-    def _find_trash_images(self) -> List[OdfImage]:
-        """Find images in trash containing LAB GUID"""
-        return self._find_images_by_criteria("trash", guid_check=True, csi_only=False)
-
-    def _find_related_csi_snaps(self) -> List[OdfImage]:
-        """Find csi-snaps whose parents contain LAB GUID"""
-        return self._find_images_by_criteria("pool", guid_check=True, csi_only=True)
     
     def _find_trash_csi_snaps(self) -> List[OdfImage]:
         """Find csi-snaps in trash that have active dependencies"""
@@ -341,23 +329,6 @@ class OdfCleaner:
             print(f"Error finding trash csi-snaps: {e}")
         
         return csi_snaps
-    
-    def _get_lab_image_names(self) -> Set[str]:
-        """Get all image names related to this LAB for correlation"""
-        lab_images = set()
-        try:
-            # Active images
-            all_rbd_images = rbd.RBD().list(self.ioctx)
-            lab_images.update([img for img in all_rbd_images if self.lab_guid in img and 'csi-snap' not in img])
-            
-            # Trash images
-            trash_items = rbd.RBD().trash_list(self.ioctx)
-            lab_images.update([item['name'] for item in trash_items if self.lab_guid in item['name'] and 'csi-snap' not in item['name']])
-            
-        except Exception as e:
-            print(f"Warning: Could not get lab image names for correlation: {e}")
-        
-        return lab_images
     
     def _find_active_to_trash_dependencies(self) -> Dict[str, List[str]]:
         """Find active images that depend on trash items"""
@@ -419,30 +390,6 @@ class OdfCleaner:
                 return True
                 
         return False
-    
-    def _get_restoration_plan(self, dependencies: Dict[str, List[str]]) -> List[Dict]:
-        """Generate a plan for restoring trash items, flattening, and cleanup"""
-        plan = []
-        
-        for active_image, trash_parents in dependencies.items():
-            for trash_parent in trash_parents:
-                plan.append({
-                    'action': 'restore',
-                    'target': trash_parent,
-                    'reason': f'needed by active image {active_image}'
-                })
-                plan.append({
-                    'action': 'flatten',
-                    'target': active_image,
-                    'reason': f'remove dependency on {trash_parent}'
-                })
-                plan.append({
-                    'action': 'delete',
-                    'target': trash_parent,
-                    'reason': f'cleanup after flattening {active_image}'
-                })
-        
-        return plan
     
     def _create_image_from_rbd(self, img_name: str, image_type: ImageType) -> Optional[OdfImage]:
         """Create an OdfImage from an RBD image"""
