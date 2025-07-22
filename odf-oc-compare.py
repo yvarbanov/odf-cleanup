@@ -459,6 +459,12 @@ class OdfOpenShiftComparator:
         
         print(f"\nGenerating cleanup script: {output_file}")
         
+        # Cache the ordering result to avoid multiple expensive RBD API calls
+        ordered_guids = self._order_guids_by_complexity()
+        priority_1_guids = [guid for guid, cat, counts in ordered_guids if 'priority 1' in cat]
+        priority_2_guids = [guid for guid, cat, counts in ordered_guids if 'priority 2' in cat]
+        priority_3_guids = [guid for guid, cat, counts in ordered_guids if 'priority 3' in cat]
+        
         script_content = f"""#!/bin/bash
 # Generated orphaned GUID cleanup script
 # Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -472,9 +478,9 @@ export DRY_RUN="true"  # Change to "false" for actual cleanup
 export DEBUG="true"
 
 # Orphaned GUIDs to clean up (ordered by complexity: simple → complex)
-PRIORITY_1_GUIDS="{' '.join([guid for guid, cat, counts in self._order_guids_by_complexity() if 'priority 1' in cat])}"
-PRIORITY_2_GUIDS="{' '.join([guid for guid, cat, counts in self._order_guids_by_complexity() if 'priority 2' in cat])}"
-PRIORITY_3_GUIDS="{' '.join([guid for guid, cat, counts in self._order_guids_by_complexity() if 'priority 3' in cat])}"
+PRIORITY_1_GUIDS="{' '.join(priority_1_guids)}"
+PRIORITY_2_GUIDS="{' '.join(priority_2_guids)}"
+PRIORITY_3_GUIDS="{' '.join(priority_3_guids)}"
 
 ALL_ORPHANED_GUIDS="$PRIORITY_1_GUIDS $PRIORITY_2_GUIDS $PRIORITY_3_GUIDS"
 
