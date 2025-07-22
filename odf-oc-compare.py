@@ -44,6 +44,11 @@ class OdfOpenShiftComparator:
         # Track parentless CSI snapshots and their children analysis
         self.parentless_csi_snaps: Dict[str, Dict] = {}  # {snap_name: {children: [...], child_guids: [...], analysis: ...}}
         
+        # Cache expensive operations to avoid repeated RBD calls
+        self._cached_ordered_guids: Optional[List[tuple]] = None
+        self._cached_all_images: Optional[List[str]] = None
+        self._cached_trash_items: Optional[List] = None
+        
         # Statistics
         self.stats = {
             'namespaces_found': 0,
@@ -132,9 +137,13 @@ class OdfOpenShiftComparator:
         try:
             # Get all RBD images in pool
             all_images = rbd.RBD().list(self.ioctx)
+            # Cache for reuse in counting operations
+            self._cached_all_images = all_images
             
             # Get all trash items (convert iterator to list)
             trash_items = list(rbd.RBD().trash_list(self.ioctx))
+            # Cache for reuse in counting operations
+            self._cached_trash_items = trash_items
             
             if self.debug:
                 print(f"  Found {len(all_images)} active images, {len(trash_items)} trash items")
@@ -343,6 +352,8 @@ class OdfOpenShiftComparator:
         if self.orphaned_guids:
             print("ORPHANED GUIDS (ordered by cleanup complexity):")
             ordered_guids = self._order_guids_by_complexity()
+            # Cache for reuse in cleanup script generation
+            self._cached_ordered_guids = ordered_guids
             
             current_category = None
             for guid, category, counts in ordered_guids:
@@ -384,8 +395,12 @@ class OdfOpenShiftComparator:
         counts = {'volumes': 0, 'snaps': 0, 'trash': 0, 'total': 0}
         
         try:
-            # Count active images
-            all_images = rbd.RBD().list(self.ioctx)
+            # Use cached images if available, otherwise fetch (shouldn't happen in normal flow)
+            if self._cached_all_images is not None:
+                all_images = self._cached_all_images
+            else:
+                all_images = rbd.RBD().list(self.ioctx)
+                
             for img_name in all_images:
                 if guid in img_name:
                     if 'csi-snap' in img_name:
@@ -398,8 +413,12 @@ class OdfOpenShiftComparator:
                     if cached_guid == guid:
                         counts['snaps'] += 1
             
-            # Count trash items
-            trash_items = list(rbd.RBD().trash_list(self.ioctx))
+            # Use cached trash items if available, otherwise fetch (shouldn't happen in normal flow)
+            if self._cached_trash_items is not None:
+                trash_items = self._cached_trash_items
+            else:
+                trash_items = list(rbd.RBD().trash_list(self.ioctx))
+                
             for item in trash_items:
                 if guid in item['name']:
                     counts['trash'] += 1
@@ -459,8 +478,13 @@ class OdfOpenShiftComparator:
         
         print(f"\nGenerating cleanup script: {output_file}")
         
-        # Cache the ordering result to avoid multiple expensive RBD API calls
-        ordered_guids = self._order_guids_by_complexity()
+        # Reuse cached ordering result from generate_report() - no expensive RBD calls!
+        if self._cached_ordered_guids is None:
+            # Fallback if cache not available (shouldn't happen in normal flow)
+            ordered_guids = self._order_guids_by_complexity()
+        else:
+            ordered_guids = self._cached_ordered_guids
+            
         priority_1_guids = [guid for guid, cat, counts in ordered_guids if 'priority 1' in cat]
         priority_2_guids = [guid for guid, cat, counts in ordered_guids if 'priority 2' in cat]
         priority_3_guids = [guid for guid, cat, counts in ordered_guids if 'priority 3' in cat]
@@ -481,8 +505,6 @@ export DEBUG="true"
 PRIORITY_1_GUIDS="{' '.join(priority_1_guids)}"
 PRIORITY_2_GUIDS="{' '.join(priority_2_guids)}"
 PRIORITY_3_GUIDS="{' '.join(priority_3_guids)}"
-
-ALL_ORPHANED_GUIDS="$PRIORITY_1_GUIDS $PRIORITY_2_GUIDS $PRIORITY_3_GUIDS"
 
 echo "Starting cleanup of orphaned lab GUIDs..."
 echo "Priority 1 (volumes only): $PRIORITY_1_GUIDS"
@@ -546,26 +568,7 @@ for guid in $PRIORITY_3_GUIDS; do
 done
 
 echo "Cleanup script completed!"
-
-# PARENTLESS CSI SNAPSHOTS - MANUAL REVIEW REQUIRED
-# These CSI snapshots have no parent but may have children
-# Review carefully before deletion as they might be base/boot images
-
 """
-
-        # Add parentless CSI snapshots section
-        if self.parentless_csi_snaps:
-            for snap_name, analysis in sorted(self.parentless_csi_snaps.items()):
-                script_content += f"""# {snap_name}: {analysis['recommendation']}
-# Children: {analysis['total_children']}, Child GUIDs: {', '.join(analysis['child_guids']) if analysis['child_guids'] else 'none'}
-"""
-                if analysis['recommendation'].startswith('SAFE TO DELETE'):
-                    script_content += f"# rbd rm {self.pool_name}/{snap_name}\n"
-                else:
-                    script_content += f"# REVIEW REQUIRED: rbd rm {self.pool_name}/{snap_name}\n"
-                script_content += "\n"
-
-        script_content += '"""'
         
         try:
             with open(output_file, 'w') as f:

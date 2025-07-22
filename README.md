@@ -201,17 +201,59 @@ FINAL VERIFICATION - Checking for remaining objects...
 SUCCESS: No objects with GUID found in pool
 ```
 
-## Requires
-- python3.6
-- ceph/odf tools 
-- odf conf
-- odf keyring with sufficient privileges
+## Requirements
 
-## How to
+### System Requirements
+- **Python 3.6+**
+- **Ceph/ODF tools** installed and accessible
+- **OpenShift CLI (oc)** or **kubectl** for comparison tool
+- **Valid kubeconfig** with cluster access (for comparison tool)
+
+### Python Packages
+```console
+# For both scripts
+pip install rados rbd
+
+# Additional for comparison tool
+pip install kubernetes
+```
+
+### ODF Cluster Access
+- **ODF configuration file** (ceph.conf)
+- **ODF keyring** with sufficient privileges to list and manage RBD images
+
+## Environment Variables
+
+### Required for Both Scripts
+- `CL_POOL` - ODF pool name (e.g., "ocpv-tenants")
+- `CL_CONF` - Path to Ceph configuration file
+- `CL_KEYRING` - Path to Ceph keyring file
+
+### Required for Cleanup Script Only
+- `CL_LAB` - LAB GUID to clean up
+
+### Optional for Both Scripts
+- `DRY_RUN` - Enable dry-run mode (default: "true")
+- `DEBUG` - Enable debug output (default: "false")
+
+## How to Use
+
+### ODF Cleanup Script
 ```console
 git clone https://github.com/yvarbanov/odf-cleanup.git odf-cleanup
+cd odf-cleanup
 source env.sh
+# Edit env.sh with your specific values
+export CL_LAB="your-lab-guid"
 python3 odf-cleanup.py
+```
+
+### ODF-OpenShift Comparison Tool
+```console
+cd odf-cleanup
+source env.sh
+# Edit env.sh with your specific values (CL_LAB not needed)
+python3 odf-oc-compare.py
 ```
 
 ## ODF-OpenShift Comparison Tool
@@ -250,10 +292,9 @@ source env.sh
 python3 odf-oc-compare.py
 ```
 
-**Requirements:**
-- Valid kubeconfig with access to OpenShift cluster
-- Python packages: `pip install kubernetes`
-- Same ODF environment variables as the cleanup script
+**Additional Requirements:**
+- Valid kubeconfig with access to OpenShift/Kubernetes cluster
+- `CL_LAB` environment variable not required (tool discovers all GUIDs)
 
 ### Output
 
@@ -262,7 +303,48 @@ The script generates:
 2. **Parentless CSI snapshot analysis** with safety recommendations  
 3. **Automated cleanup script** (`cleanup_orphaned_guids.sh`) ordered by complexity
 
+## Troubleshooting
 
+### Common Issues
+
+**"Missing environment variable" error:**
+```console
+# Make sure all required variables are set
+source env.sh
+env | grep CL_
+```
+
+**"Error connecting to ODF cluster":**
+- Verify ODF configuration file path exists: `ls -la $CL_CONF`
+- Check keyring file permissions: `ls -la $CL_KEYRING`
+- Test ODF connectivity: `rbd -p $CL_POOL list`
+
+**"Error discovering namespaces" (comparison tool):**
+- Verify kubeconfig is valid: `oc whoami` or `kubectl auth can-i get namespaces`
+- Check cluster connectivity: `oc get projects` or `kubectl get namespaces`
+
+**"RBD image not found" warnings:**
+- These are normal for orphaned CSI snapshots
+- Enable debug mode for more details: `export DEBUG="true"`
+
+**Performance Issues:**
+- Large clusters may take longer for initial discovery
+- Script uses caching to optimize repeated operations
+- Consider running during off-peak hours for large cleanups
+
+### Debug Mode
+
+Enable detailed logging for troubleshooting:
+```console
+export DEBUG="true"
+python3 odf-oc-compare.py
+```
+
+This shows:
+- Connection details
+- GUID extraction process
+- CSI snapshot parent analysis
+- Detailed error messages
 
 ## Want to contribute?
 - Feel free to open a PR
