@@ -214,6 +214,56 @@ source env.sh
 python3 odf-cleanup.py
 ```
 
+## ODF-OpenShift Comparison Tool
+
+The `odf-oc-compare.py` script compares active OpenShift namespaces with ODF RBD images to identify orphaned lab GUIDs. This helps discover storage resources that are no longer associated with active labs and can be safely cleaned up.
+
+### Key Features
+
+- **Namespace Analysis**: Discovers active lab GUIDs from OpenShift projects (pattern: `sandbox-{GUID}-*`)
+- **ODF Resource Discovery**: Analyzes volumes, CSI snapshots, and trash items
+- **Parentless CSI Snapshot Analysis**: Identifies potential boot/base images by analyzing children relationships
+- **Smart Ordering**: Prioritizes cleanup by complexity (volumes only → volumes+snapshots → volumes+snapshots+trash)
+- **Automated Script Generation**: Creates ready-to-run cleanup scripts
+
+### Workflow
+
+The comparison tool follows this logical workflow:
+
+```
+Workflow Step                     Implementation
+-------------                     --------------
+compare                       →   run_comparison()
+get projects                  →   discover_namespace_guids()  
+get csi-snaps + analyze       →   discover_odf_guids() + _analyze_parentless_csi_snap()
+get volumes                   →   _extract_guid_from_image()
+compare guids                 →   compare_and_find_orphans()
+order for deletion            →   _order_guids_by_complexity()
+create script                 →   generate_cleanup_script()
+run cleanup                   →   Generated bash script
+```
+
+### Usage
+
+```console
+source env.sh
+python3 odf-oc-compare.py
+```
+
+**Requirements:**
+- Valid kubeconfig with access to OpenShift cluster
+- Python packages: `pip install kubernetes`
+- Same ODF environment variables as the cleanup script
+
+### Output
+
+The script generates:
+1. **Detailed comparison report** showing active vs orphaned GUIDs
+2. **Parentless CSI snapshot analysis** with safety recommendations  
+3. **Automated cleanup script** (`cleanup_orphaned_guids.sh`) ordered by complexity
+
+
+
 ## Want to contribute?
 - Feel free to open a PR
 
