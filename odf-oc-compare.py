@@ -19,9 +19,13 @@ import rbd
 import rados
 import os
 import re
+import urllib3
 from typing import List, Dict, Set, Optional
 from datetime import datetime
 from kubernetes import client, config
+
+# Suppress SSL warnings for kubernetes API calls
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class OdfOpenShiftComparator:
@@ -336,18 +340,6 @@ class OdfOpenShiftComparator:
         print(f"ODF Pool: {self.pool_name}")
         print()
         
-        # Summary
-        print("SUMMARY:")
-        print(f"  Namespaces: {self.stats['namespaces_found']}")
-        print(f"  Active Lab GUIDs: {self.stats['active_guids']}")
-        print(f"  ODF Volumes: {self.stats['odf_volumes_found']}")
-        print(f"  ODF CSI Snapshots: {self.stats['odf_csi_snaps_found']}")
-        print(f"  ODF Trash Items: {self.stats['odf_trash_items_found']}")
-        print(f"  Unique ODF GUIDs: {self.stats['unique_odf_guids']}")
-        print(f"  Orphaned GUIDs: {self.stats['orphaned_guids']}")
-        print(f"  Parentless CSI Snapshots: {len(self.parentless_csi_snaps)}")
-        print()
-        
         # Orphaned GUIDs detail (ordered by complexity)
         if self.orphaned_guids:
             print("ORPHANED GUIDS (ordered by cleanup complexity):")
@@ -387,6 +379,19 @@ class OdfOpenShiftComparator:
                 print()
         else:
             print("[v] No parentless CSI snapshots found")
+        
+        print()
+        
+        # Summary at the bottom
+        print("SUMMARY:")
+        print(f"  Namespaces: {self.stats['namespaces_found']}")
+        print(f"  Active Lab GUIDs: {self.stats['active_guids']}")
+        print(f"  ODF Volumes: {self.stats['odf_volumes_found']}")
+        print(f"  ODF CSI Snapshots: {self.stats['odf_csi_snaps_found']}")
+        print(f"  ODF Trash Items: {self.stats['odf_trash_items_found']}")
+        print(f"  Unique ODF GUIDs: {self.stats['unique_odf_guids']}")
+        print(f"  Orphaned GUIDs: {self.stats['orphaned_guids']}")
+        print(f"  Parentless CSI Snapshots: {len(self.parentless_csi_snaps)}")
         
         print("="*80)
     
