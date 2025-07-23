@@ -212,13 +212,13 @@ class OdfCleaner:
                     raise ValueError(f"No [client.name] found in keyring file: {keyring}")
             self.cluster = rados.Rados(conffile=conf_file, conf=dict(keyring=keyring), name=client_name)
             self.cluster.connect()
-            self.ioctx = cluster.open_ioctx(self.pool_name)
+            self.ioctx = self.cluster.open_ioctx(self.pool_name)
             
             debug = os.environ.get('DEBUG', 'false').lower() in ['true', '1', 'yes']
             if debug:
-                print(f"Connected to ODF cluster: {cluster.get_fsid()}")
-                print(f"librados version: {cluster.version()}")
-                print(f"Monitor hosts: {cluster.conf_get('mon host')}")
+                print(f"Connected to ODF cluster: {self.cluster.get_fsid()}")
+                print(f"librados version: {self.cluster.version()}")
+                print(f"Monitor hosts: {self.cluster.conf_get('mon host')}")
             
             return True
             
