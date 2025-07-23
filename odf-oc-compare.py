@@ -501,8 +501,8 @@ class OdfOpenShiftComparator:
 
 # Set environment variables (modify as needed)
 export CL_POOL="{self.pool_name}"
-export CL_CONF="${os.environ.get('CL_CONF', '/path/to/ceph.conf')}"
-export CL_KEYRING="${os.environ.get('CL_KEYRING', '/path/to/keyring')}"
+export CL_CONF="{os.environ.get('CL_CONF', '/path/to/ceph.conf')}"
+export CL_KEYRING="{os.environ.get('CL_KEYRING', '/path/to/keyring')}"
 export DRY_RUN="true"  # Change to "false" for actual cleanup
 export DEBUG="true"
 
