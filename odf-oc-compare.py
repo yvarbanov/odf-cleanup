@@ -70,8 +70,15 @@ class OdfOpenShiftComparator:
             self.pool_name = os.environ['CL_POOL']
             conf_file = os.environ['CL_CONF']
             keyring = os.environ['CL_KEYRING']
-            
-            self.cluster = rados.Rados(conffile=conf_file, conf=dict(keyring=keyring))
+            # Extract client name from keyring file
+            with open(keyring, 'r') as f:
+                for line in f:
+                    if line.strip().startswith('[client.') and line.strip().endswith(']'):
+                        client_name = line.strip()[1:-1]  # Remove brackets
+                        break
+                else:
+                    raise ValueError(f"No [client.name] found in keyring file: {keyring}")
+            self.cluster = rados.Rados(conffile=conf_file, conf=dict(keyring=keyring), name=client_name)
             self.cluster.connect()
             self.ioctx = self.cluster.open_ioctx(self.pool_name)
             
@@ -662,4 +669,4 @@ def main():
 
 
 if __name__ == "__main__":
-    exit(main()) 
+    exit(main())

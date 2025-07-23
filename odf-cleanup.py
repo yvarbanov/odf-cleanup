@@ -202,9 +202,16 @@ class OdfCleaner:
             conf_file = os.environ['CL_CONF']
             keyring = os.environ['CL_KEYRING']
             self.lab_guid = os.environ['CL_LAB']
-            
-            cluster = rados.Rados(conffile=conf_file, conf=dict(keyring=keyring))
-            cluster.connect()
+            # Extract client name from keyring file
+            with open(keyring, 'r') as f:
+                for line in f:
+                    if line.strip().startswith('[client.') and line.strip().endswith(']'):
+                        client_name = line.strip()[1:-1]  # Remove brackets
+                        break
+                else:
+                    raise ValueError(f"No [client.name] found in keyring file: {keyring}")
+            self.cluster = rados.Rados(conffile=conf_file, conf=dict(keyring=keyring), name=client_name)
+            self.cluster.connect()
             self.ioctx = cluster.open_ioctx(self.pool_name)
             
             debug = os.environ.get('DEBUG', 'false').lower() in ['true', '1', 'yes']
