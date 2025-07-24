@@ -10,6 +10,83 @@ main() → OdfCleaner.cleanup() → connect() → discover_images() → build_tr
 
 ---
 
+### High-Level Execution Flow Diagram
+
+```mermaid
+graph TD
+    A["Connect to Cluster"] --> B["Discover Images"]
+    B --> C["Analyze Dependencies"] 
+    C --> D["Build Tree"]
+    D --> E["Plan Removal Order"]
+    E --> F{"Execute Cleanup"}
+    F -->|"Success"| G["Final Verification"]
+    F -->|"Failures"| H["Trash Purge + Retry"]
+    H --> I{"All Success?"}
+    I -->|"Yes"| G
+    I -->|"No"| J["Report Failures"]
+    G --> K["Generate Report"]
+    J --> K
+```
+
+--- 
+
+**Summary:** Flattening is essentially the "Plan B" when the preferred method (trash restoration) fails, ensuring cleanup can still proceed even with complex dependency chains.
+
+### Image Removal Decision Flow
+
+```mermaid
+graph TD
+    A["Remove Image"] --> B{"In Trash?"}
+    B -->|"Yes"| C["Restore from Trash"]
+    B -->|"No"| D{"Needs Flattening?"}
+    C -->|"Success"| D
+    C -->|"Failed"| E["Track Failed Restoration"]
+    D -->|"Yes"| F["Flatten Image"]
+    D -->|"No"| G["Remove Active Image"]
+    E --> H{"Fallback Flatten?"}
+    H -->|"Yes"| F
+    H -->|"No"| I["Skip & Continue"]
+    F --> G
+    G --> J["Update Stats"]
+    I --> J
+```
+
+### Restoration Failure Handling Decision 
+
+#### **Tier 2: Fallback Method (Flattening)**
+- **Goal:** Break dependencies when trash restoration fails
+- **Process:** When trash restoration fails:
+  1. Flatten the active image using `_flatten_image()`
+  2. This removes the parent relationship entirely
+  3. Image becomes independent and can be deleted without dependencies
+  4. The failed trash items are left in trash but marked as handled
+
+### Dependency Resolution Sequence
+
+```mermaid
+sequenceDiagram
+    participant D as "Discovery"
+    participant A as "Active Image"
+    participant T as "Trash Item"
+    participant C as "Cleanup"
+    
+    D->>A: "Scan for parent relationships"
+    A->>T: "Check if parent in trash"
+    T-->>A: "Parent relationship found"
+    A->>D: "Report dependency"
+    D->>C: "Cache dependency map"
+    C->>T: "Attempt restore"
+    T-->>C: "Restore success/fail"
+    alt "Restore Success"
+        C->>A: "Delete in proper order"
+    else "Restore Failed"
+        C->>A: "Flatten to break dependency"
+    end
+```
+
+
+---
+
 ## Classes
 
 ### 1. `ImageType(Enum)`
