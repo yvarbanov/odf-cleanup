@@ -663,7 +663,7 @@ class OdfCleaner:
             print("  Executing trash purge...")
             rbd.RBD().trash_purge(self.ioctx, 0)
             print("  Trash purge completed")
-            
+            time.sleep(10)
             return True
             
         except Exception as e:
