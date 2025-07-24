@@ -148,9 +148,10 @@ sequenceDiagram
 **When:** After successful connection
 **Purpose:** Finds all RBD images related to LAB GUID
 **Does:**
-- Calls `_find_images_by_criteria()` for pool images, trash images, and CSI snaps
-- Analyzes dependencies between active and trash items
-- Returns list of discovered OdfImage objects
+- **Phase 1**: Calls `_find_images_by_criteria()` for pool images, trash images, and CSI snaps
+- **Phase 2**: Calls `_discover_descendants_and_dependencies()` for comprehensive descendant analysis and trash dependency tracking
+- **Phase 3**: Analyzes final trash csi-snaps via `_find_trash_csi_snaps()`
+- Returns complete list of discovered OdfImage objects
 
 #### `_find_images_by_criteria()`
 **When:** Called by discover_images()
@@ -168,21 +169,58 @@ sequenceDiagram
 - Uses cached dependency analysis to determine which are referenced
 - Returns list of referenced trash CSI snapshots
 
-#### `_find_active_to_trash_dependencies()`
-**When:** During discovery phase
-**Purpose:** Analyzes which active images depend on trash items
-**Does:**
-- Scans all LAB active images for parent relationships to trash items
-- Builds dependency map for multi-phase operations
-- Returns dictionary mapping active images to their trash dependencies
-
 #### Helper Methods for Discovery:
 - `_is_image_in_trash()` - Checks if image exists in trash
 - `_is_trash_item_referenced()` - Checks if trash item is referenced by active images
 - `_create_image_from_rbd()` - Creates OdfImage from active RBD image with full metadata
 - `_create_trash_image()` - Creates OdfImage from trash item
 
-### Phase 2: Tree Building & Planning
+### Phase 2: Comprehensive Descendant Analysis
+
+#### `_discover_descendants_and_dependencies()`
+**When:** After initial GUID-based discovery (Phase 1)
+**Purpose:** Recursively scans for missing descendants and tracks trash dependencies in a single optimized scan
+**Does:**
+- Scans `list_descendants()` of all discovered active images
+- **Active descendants**: Includes ALL found descendants in discovery list for tree hierarchy
+- **Trash descendants**: Tracks as dependencies only (no discovery, different cleanup method)
+- Continues recursively until no new descendants are found
+- Returns tuple: `(additional_images, active_to_trash_dependencies)`
+- Prevents "still has descendants" errors by finding all blocking children
+
+**Key Algorithm:**
+```python
+while images_to_scan:
+    current_batch = []
+    for image in images_to_scan:
+        descendants = list(img.list_descendants())
+        for desc in descendants:
+            if desc.get('trash', False):
+                # Track trash dependency only
+                active_to_trash_deps[image.name].append(desc_name)
+            else:
+                # Add active descendant to discovery
+                if desc_name not in discovered_names:
+                    current_batch.append(new_image)
+    images_to_scan = current_batch  # Continue scanning new descendants
+```
+
+**Key Optimization:** Single RBD API scan replaces duplicate calls from separate descendant discovery and dependency analysis methods.
+
+**Problem Solved:** 
+- **Race Condition Prevention**: Discovery-time relationships vs deletion-time relationships
+- **Complete Hierarchy Building**: Ensures tree shows all blocking relationships
+- **Runtime Blocking Detection**: Finds descendants that block deletion regardless of naming patterns
+
+**Example Output:**
+```
+Phase 2: Scanning for missing descendants...
+  Found 1 new images to scan for descendants...
+  Recursive scan complete: found 2 total missing descendants
+  Found 3 active->trash dependencies
+```
+
+### Phase 3: Tree Building & Planning
 
 #### `build_tree()`
 **When:** After discovery
@@ -200,7 +238,7 @@ sequenceDiagram
 - Displays planned removal sequence
 - Returns ordered list of images for deletion
 
-### Phase 3: Execution
+### Phase 4: Execution
 
 #### `execute_cleanup()`
 **When:** After planning
@@ -235,7 +273,7 @@ sequenceDiagram
 - `_remove_active_image()` - Removes active RBD images after dependency resolution
 - `_remove_internal_snapshots()` - Removes and unprotects internal snapshots
 
-### Phase 4: Recovery & Verification
+### Phase 5: Recovery & Verification
 
 #### `_purge_expired_trash()`
 **When:** During retry strategy for failed removals
@@ -249,7 +287,7 @@ sequenceDiagram
 - `_needs_fallback_flattening()` - Checks if flattening needed due to failed trash restorations
 - `_item_still_exists()` - Verifies if item still exists after operations
 
-### Phase 5: Reporting & Verification
+### Phase 6: Reporting & Verification
 
 #### `_final_verification()`
 **When:** After successful cleanup (no failures)
@@ -343,9 +381,7 @@ The cleaner uses a **two-tier approach** to handle dependencies:
 #### **Key Point:**
 The dependency analysis happens **during discovery** via `_find_active_to_trash_dependencies()`, which scans all LAB images for parent relationships to trash items. This creates the dependency map that drives all flattening decisions later.
 
-**Summary:** Flattening is essentially the "Plan B" when the preferred method (trash restoration) fails, ensuring cleanup can still proceed even with complex dependency chains.
-
-### Restoration Failure Handling Decision
+**Summary:** Flattening is essentially the "Plan B" when the preferred method (trash restoration) fails, ensuring cleanup can still proceed even with complex dependency chains.### Restoration Failure Handling Decision
 
 #### Decision Mechanisms:
 - **Failure Detection:** `_restore_from_trash()` returns False
@@ -401,3 +437,4 @@ This decision handles the **naming inconsistency** where CSI-snaps may not conta
 
 #### **Key Point:**
 The retry strategy assumes that **expired trash items** may be blocking cleanup operations. The system attempts one global trash purge before giving up, treating this as the definitive recovery attempt. 
+

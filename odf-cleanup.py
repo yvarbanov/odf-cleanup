@@ -10,7 +10,7 @@ import rados
 import time
 import os
 from datetime import datetime
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Tuple
 from enum import Enum
 
 
@@ -234,26 +234,36 @@ class OdfCleaner:
         print(f"\nDiscovering RBD images for LAB GUID: {self.lab_guid}")
         self._clear_dependency_cache()
         
-        # Discover all types
+        # Phase 1: Initial GUID-based discovery
         pool_images = self._find_images_by_criteria("pool", guid_check=True, csi_only=False)
         trash_images = self._find_images_by_criteria("trash", guid_check=True, csi_only=False)
         csi_snaps = self._find_images_by_criteria("pool", guid_check=True, csi_only=True)
         
-        # Analyze dependencies and find trash csi-snaps
-        self._active_to_trash_dependencies = self._find_active_to_trash_dependencies()
+        initial_images = pool_images + trash_images + csi_snaps
+        
+        # Phase 2: Comprehensive descendant discovery
+        additional_images, active_to_trash_deps = self._discover_descendants_and_dependencies(initial_images)
+        
+        # Phase 3: Dependency analysis and trash csi-snaps
+        self._active_to_trash_dependencies = active_to_trash_deps
         trash_csi_snaps = self._find_trash_csi_snaps()
         
+        # Combine all discovered images
+        all_discovered = initial_images + additional_images + trash_csi_snaps
+        
         # Print summary
-        total = len(pool_images) + len(trash_images) + len(csi_snaps) + len(trash_csi_snaps)
         print(f"Found: {len(pool_images)} volumes, {len(csi_snaps)} csi-snaps, {len(trash_images)} trash volumes, {len(trash_csi_snaps)} trash csi-snaps")
+        if additional_images:
+            print(f"  + {len(additional_images)} missing descendants discovered")
+        print(f"  Total: {len(all_discovered)} items")
         
         # Check dependencies
         if self._active_to_trash_dependencies:
-            print(f"WARNING: {len(self._active_to_trash_dependencies)} images have trash dependencies")
+            print(f"WARNING: {sum(len(deps) for deps in self._active_to_trash_dependencies.values())} images have trash dependencies")
         else:
             print("No active->trash dependencies found")
         
-        return pool_images + trash_images + csi_snaps + trash_csi_snaps
+        return all_discovered
     
     def _find_images_by_criteria(self, source: str, guid_check: bool = True, csi_only: bool = False) -> List[OdfImage]:
         """Generic method to find images based on criteria"""
@@ -337,44 +347,70 @@ class OdfCleaner:
         
         return csi_snaps
     
-    def _find_active_to_trash_dependencies(self) -> Dict[str, List[str]]:
-        """Find active images that depend on trash items"""
-        dependencies = {}
+    def _discover_descendants_and_dependencies(self, discovered_images: List[OdfImage]) -> Tuple[List[OdfImage], Dict[str, List[str]]]:
+        """Recursively scan for missing descendants and track trash dependencies"""
+        all_additional = []
+        active_to_trash_deps = {}
+        discovered_names = {img.name for img in discovered_images}
         
-        try:
-            all_rbd_images = rbd.RBD().list(self.ioctx)
-            lab_active_images = [img for img in all_rbd_images if self.lab_guid in img]
+        # Start with originally discovered active images
+        images_to_scan = [img for img in discovered_images if not img.in_trash]
+        scanned_names = set()  # Track what we've already scanned to avoid loops
+        
+        while images_to_scan:
+            current_batch = []
             
-            for img_name in lab_active_images:
+            # Scan current batch of images
+            for image in images_to_scan:
+                # Skip if already scanned this image
+                if image.name in scanned_names:
+                    continue
+                    
+                scanned_names.add(image.name)
+                
                 try:
-                    with rbd.Image(self.ioctx, img_name) as img:
-                        parent_info = img.parent_info()
-                        if parent_info and len(parent_info) >= 2:
-                            parent_pool, parent_image = parent_info[0], parent_info[1]
-                            if self._is_image_in_trash(parent_image):
-                                if img_name not in dependencies:
-                                    dependencies[img_name] = []
-                                dependencies[img_name].append(parent_image)
-                                
-                        # Check for clone dependencies
+                    with rbd.Image(self.ioctx, image.name) as img:
                         descendants = list(img.list_descendants())
+                        
                         for desc in descendants:
+                            desc_name = desc.get('name', '') if isinstance(desc, dict) else str(desc)
+                            if not desc_name:
+                                continue
+                            
+                            # Handle trash descendants - track dependency only
                             if desc.get('trash', False):
-                                desc_name = desc.get('name', '')
-                                if desc_name:
-                                    if img_name not in dependencies:
-                                        dependencies[img_name] = []
-                                    dependencies[img_name].append(desc_name)
+                                if image.name not in active_to_trash_deps:
+                                    active_to_trash_deps[image.name] = []
+                                active_to_trash_deps[image.name].append(desc_name)
+                                continue
+                            
+                            # Handle active descendants - add to discovery
+                            if desc_name not in discovered_names:
+                                new_image = self._create_image_from_rbd(desc_name)
+                                if new_image:
+                                    new_image.parent_name = image.name
+                                    current_batch.append(new_image)
+                                    all_additional.append(new_image)
+                                    discovered_names.add(desc_name)
                                     
-                except Exception as img_err:
+                except Exception as e:
                     debug = os.environ.get('DEBUG', 'false').lower() in ['true', '1', 'yes']
                     if debug:
-                        print(f"Warning: Could not check dependencies for {img_name}: {img_err}")
-                    
-        except Exception as e:
-            print(f"Warning: Could not analyze dependencies: {e}")
+                        print(f"    DEBUG: Error scanning descendants of {image.name}: {e}")
+                    continue
+            
+            # Prepare next batch (newly discovered active images)
+            images_to_scan = current_batch
+            if current_batch:
+                print(f"    Found {len(current_batch)} new images to scan for descendants...")
         
-        return dependencies
+        if all_additional:
+            print(f"    Recursive scan complete: found {len(all_additional)} total missing descendants")
+        if active_to_trash_deps:
+            dep_count = sum(len(deps) for deps in active_to_trash_deps.values())
+            print(f"    Found {dep_count} active->trash dependencies")
+        
+        return all_additional, active_to_trash_deps
     
     def _is_image_in_trash(self, image_name: str) -> bool:
         """Check if an image is currently in trash"""
