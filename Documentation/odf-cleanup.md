@@ -30,6 +30,60 @@ graph TD
 
 --- 
 
+### Hierarchy Build-up Process
+
+```mermaid
+graph TD
+    A["Start Discovery"] --> B["Phase 1: Initial GUID Discovery"]
+    B --> C["_find_images_by_criteria()"]
+    C --> D["Pool Images + Trash Images + CSI Snaps"]
+    
+    D --> E["Phase 2: Recursive Descendant Discovery"]
+    E --> F["_discover_descendants_and_dependencies()"]
+    F --> G["For each active image: list_descendants()"]
+    G --> H{"Found descendants?"}
+    H -->|"Yes"| X{"Is in trash?"}
+    X -->|"Yes"| J["Trash descendants → Track dependencies"]
+    X -->|"No"| I["Active descendants → Add to discovery"]
+    I --> K["Scan new descendants recursively"]
+    K --> H
+    H -->|"No more"| L["Phase 3: Final Trash CSI Analysis"]
+    
+    L --> M["_find_trash_csi_snaps()"]
+    M --> N["Discovery Complete"]
+    
+    N --> O["build_tree()"]
+    O --> P["Create OdfTree instance"]
+    P --> Q["Add all discovered images"]
+    Q --> R["build_relationships()"]
+    R --> S["Establish parent-child links"]
+    S --> T["Final Hierarchical Tree"]
+    
+    T --> U["Final Hierarchical Tree Complete"]
+    
+    style A fill:#e1f5fe
+    style E fill:#fff3e0
+    style F fill:#fff3e0
+    style O fill:#f3e5f5
+    style T fill:#e8f5e8
+    style U fill:#e8f5e8
+```
+
+**Example Tree Structure Result:**
+```
+Root Image A
+       └─ Child Images (lv 2)
+                    └─ Grandchild Images (lv 3)
+                             └─ level 4+...
+
+Root Image B
+       └─ Child Images (lv 2)
+                    └─ Grandchild Images (lv 3)
+                             └─ level 4+...
+```
+
+---
+
 **Summary:** Flattening is essentially the "Plan B" when the preferred method (trash restoration) fails, ensuring cleanup can still proceed even with complex dependency chains.
 
 ### Image Removal Decision Flow
@@ -326,9 +380,11 @@ Phase 2: Scanning for missing descendants...
 
 ### Multi-Phase Operations
 - **Dependency Resolution:** Handles active images that depend on trash items
+- **Recursive Descendant Discovery:** Finds all blocking relationships via comprehensive scanning
 - **Trash Restoration:** Temporarily restores trash items for proper deletion
 - **Flattening:** Removes parent dependencies before deletion
 - **Retry Strategy:** Uses trash purge and retries for failed operations
+- **Recursive Descendant Discovery:** Finds all blocking relationships via comprehensive scanning
 
 ### Safety Features
 - **Dry Run Mode:** Simulates operations without actual deletion
@@ -379,7 +435,7 @@ The cleaner uses a **two-tier approach** to handle dependencies:
   4. The failed trash items are left in trash but marked as handled
 
 #### **Key Point:**
-The dependency analysis happens **during discovery** via `_find_active_to_trash_dependencies()`, which scans all LAB images for parent relationships to trash items. This creates the dependency map that drives all flattening decisions later.
+The dependency analysis happens **during discovery** via `_discover_descendants_and_dependencies()`, which scans all LAB images for parent relationships to trash items. This creates the dependency map that drives all flattening decisions later.
 
 **Summary:** Flattening is essentially the "Plan B" when the preferred method (trash restoration) fails, ensuring cleanup can still proceed even with complex dependency chains.### Restoration Failure Handling Decision
 
@@ -407,7 +463,7 @@ This decision prioritizes **cleanup completion over perfection**. Rather than fa
 - **Outcome:** Referenced items targeted for cleanup, unreferenced items left in trash
 
 #### **Key Point:**
-This decision relies on the **cached dependency analysis** from `_find_active_to_trash_dependencies()`. Without this pre-computed map, the system couldn't determine which trash CSI-snaps are actually needed for LAB cleanup.
+This decision relies on the **cached dependency analysis** from `_discover_descendants_and_dependencies()`. Without this pre-computed map, the system couldn't determine which trash CSI-snaps are actually needed for LAB cleanup.
 
 ### CSI-Snap Parent Relationship Decision
 
@@ -437,4 +493,19 @@ This decision handles the **naming inconsistency** where CSI-snaps may not conta
 
 #### **Key Point:**
 The retry strategy assumes that **expired trash items** may be blocking cleanup operations. The system attempts one global trash purge before giving up, treating this as the definitive recovery attempt. 
+
+### Recursive Descendant Discovery Decision
+
+#### Decision Mechanisms:
+- **Runtime vs Discovery-time Relationships:** `list_descendants()` reveals blocking relationships that `parent_info()` misses
+- **Comprehensive Scanning:** Recursively scan all discovered active images for descendants
+- **Dual Purpose:** Single method handles both descendant discovery AND trash dependency tracking
+
+#### Strategy:
+- **Problem:** Discovery-time parent relationships don't match deletion-time blocking relationships
+- **Solution:** Use `list_descendants()` to find ALL items that would block deletion
+- **Optimization:** Merge descendant discovery with dependency analysis to eliminate duplicate RBD API calls
+
+#### **Key Point:**
+This decision prioritizes **complete hierarchy discovery** over performance. The recursive scan ensures no blocking descendants are missed, preventing "still has descendants" errors during deletion regardless of naming inconsistencies or race conditions.
 
