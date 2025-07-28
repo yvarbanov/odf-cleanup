@@ -967,11 +967,6 @@ class OdfCleaner:
             for item in self._failed_trash_restorations:
                 print(f"  - {item}")
         
-        # Final verification if cleanup was successful
-        if len(self.removal_stats['failed_removals']) == 0 and len(self._failed_trash_restorations) == 0:
-            print("\n" + "-" * 80)
-            self._final_verification()
-        
         print("="*80)
     
     def _final_verification(self):
