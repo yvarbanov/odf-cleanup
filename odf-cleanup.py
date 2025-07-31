@@ -648,8 +648,7 @@ class OdfCleaner:
                 else:
                     print("All failed items were cleaned up by trash purge!")
                     retry_failed_count = 0
-            
-                    # Final verification only if we have complete success (no failed removals or restorations)
+                    
         final_failure_count = len(self.removal_stats['failed_removals'])
         restoration_failure_count = len(self._failed_trash_restorations)
         
