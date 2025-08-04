@@ -11,7 +11,6 @@ Version: 25.08.04
 import re
 import csv
 import sys
-import os
 import urllib3
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
@@ -27,7 +26,6 @@ class CleanupJobMonitor:
     def __init__(self, namespace: str = "cleanup", debug: bool = False):
         self.namespace = namespace
         self.debug = debug
-        self.failed_jobs = []
         self.v1 = None
         self.batch_v1 = None
         self._setup_k8s_client()
@@ -106,9 +104,10 @@ class CleanupJobMonitor:
         """Extract GUID from job name - assuming it contains the lab GUID"""
         # Try common patterns for cleanup job names
         patterns = [
-            r'cleanup-([a-z0-9]+)(?:-|$)',  # cleanup-kczqv-...
-            r'lab-([a-z0-9]+)-cleanup',     # lab-kczqv-cleanup
-            r'([a-z0-9]+)-cleanup',         # kczqv-cleanup
+            r'cleanup-ceph-sandbox-([a-z0-9]+)(?:-\d+)?-ocp4-cluster',  # cleanup-ceph-sandbox-{GUID}[-{num}]-ocp4-cluster-{num}
+            r'cleanup-([a-z0-9]+)(?:-|$)',  # cleanup-{GUID}-... (fallback)
+            r'lab-([a-z0-9]+)-cleanup',     # lab-{GUID}-cleanup
+            r'([a-z0-9]+)-cleanup',         # {GUID}-cleanup
         ]
         
         for pattern in patterns:
@@ -255,14 +254,23 @@ class CleanupJobMonitor:
         
         for job in jobs:
             job_name = job.metadata.name
-            print(f"Analyzing job: {job_name}")
+            if self.debug:
+                print(f"Analyzing job: {job_name}")
             
             failure_info = self.analyze_job(job)
             if failure_info:
                 failed_jobs.append(failure_info)
-                print(f"  [x] FAILED: {failure_info['guid']} - {failure_info['error_reason']}")
+                if self.debug:
+                    print(f"  [x] FAILED: {failure_info['guid']} - {failure_info['error_reason']}")
             else:
-                print(f"  [v] SUCCESS")
+                if self.debug:
+                    print(f"  [v] SUCCESS")
+        
+        # Print summary
+        total_jobs = len(jobs)
+        failed_count = len(failed_jobs)
+        success_count = total_jobs - failed_count
+        print(f"\nSummary: {total_jobs} jobs analyzed, {failed_count} failures, {success_count} success")
         
         return failed_jobs
     
