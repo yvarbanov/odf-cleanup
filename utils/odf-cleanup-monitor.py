@@ -132,6 +132,30 @@ class CleanupJobMonitor:
             
         return None
     
+    def check_namespace_exists(self, guid: str) -> bool:
+        """Check if a namespace containing the GUID still exists"""
+        if not guid or guid == 'Unknown':
+            return False
+            
+        try:
+            # List all namespaces
+            namespaces = self.v1.list_namespace()
+            
+            # Check if any namespace contains the GUID
+            for ns in namespaces.items:
+                ns_name = ns.metadata.name
+                if guid in ns_name:
+                    if self.debug:
+                        print(f"    Found namespace containing GUID {guid}: {ns_name}")
+                    return True
+                    
+            return False
+            
+        except Exception as e:
+            if self.debug:
+                print(f"    Error checking namespaces for GUID {guid}: {e}")
+            return False
+    
     def parse_error_details(self, logs: str) -> List[Tuple[str, str]]:
         """Parse error details from logs"""
         errors = []
@@ -207,9 +231,11 @@ class CleanupJobMonitor:
         # Get logs
         logs = self.get_job_logs(job_name)
         if not logs:
+            guid = self.extract_guid_from_job_name(job_name) or 'Unknown'
             return {
                 'job_name': job_name,
-                'guid': self.extract_guid_from_job_name(job_name) or 'Unknown',
+                'guid': guid,
+                'project': self.check_namespace_exists(guid),
                 'status': job_status,
                 'completion_time': completion_time,
                 'error_type': 'NO_LOGS',
@@ -233,6 +259,7 @@ class CleanupJobMonitor:
         return {
             'job_name': job_name,
             'guid': guid,
+            'project': self.check_namespace_exists(guid),
             'status': job_status,
             'completion_time': completion_time,
             'error_type': primary_error[0],
@@ -281,7 +308,7 @@ class CleanupJobMonitor:
             filename = f"cleanup_failures_{timestamp}.csv"
         
         with open(filename, 'w', newline='') as csvfile:
-            fieldnames = ['job_name', 'guid', 'status', 'completion_time', 'error_type', 'error_reason']
+            fieldnames = ['job_name', 'guid', 'project', 'status', 'completion_time', 'error_type', 'error_reason']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             
             writer.writeheader()
@@ -289,6 +316,7 @@ class CleanupJobMonitor:
                 writer.writerow({
                     'job_name': job['job_name'],
                     'guid': job['guid'],
+                    'project': 'Active' if job['project'] else 'Deleted',
                     'status': job['status'],
                     'completion_time': job['completion_time'],
                     'error_type': job['error_type'],
@@ -309,6 +337,7 @@ class CleanupJobMonitor:
         for job in failed_jobs:
             print(f"GUID: {job['guid']}")
             print(f"Job: {job['job_name']}")
+            print(f"Project: {'Active' if job['project'] else 'Deleted'}")
             print(f"Status: {job['status']}")
             print(f"Completed: {job['completion_time']}")
             print(f"Error: {job['error_type']} - {job['error_reason']}")
