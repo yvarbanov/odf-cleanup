@@ -1,6 +1,16 @@
 # odf cleanup
 Removes leftover odf images based on an identifier, referenced as LAB GUID
 
+## Assumptions:
+* OpenShift CNV + ODF
+* GUID: A unique identifier used to group and track resources belonging to a specific lab environment
+    - Appears in OpenShift namespace names as: sandbox-{GUID}-*
+    - Appears in ODF volume names as: ocp4-cluster-{GUID}-{UUID}
+    - The GUID itself is a unique identifier string (ie: "abc123")
+
+Volumes: LAB GUID is embedded in the volume name
+CSI Snapshots: Named as "csi-snap-..." but connected to volumes through parent-child relationships
+
 ## Current Strategy
 
 The script uses a **three-phase approach** with **direct matching**, **comprehensive descendant analysis**, and **dependency resolution**:

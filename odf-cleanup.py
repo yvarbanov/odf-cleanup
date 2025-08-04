@@ -1077,6 +1077,12 @@ class OdfCleaner:
             # Execution phase
             self.execute_cleanup(removal_order)
             
+            # Check if there were any failures
+            failed_count = len(self.removal_stats['failed_removals'])
+            if failed_count > 0:
+                print(f"ERROR: Cleanup failed for {failed_count} items")
+                return False
+            
             return True
             
         except Exception as e:
