@@ -12,7 +12,7 @@ Requirements:
 - ODF cluster credentials (CL_CONF, CL_KEYRING environment variables)
 
 Author:  yvarbev@redhat.com, gh:@yvarbanov
-Version: 25.07.01
+Version: 25.08.04
 """
 
 import rbd

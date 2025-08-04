@@ -2,7 +2,7 @@
 """Deletes ODF objects based on a LAB GUID using a hierarchical tree approach.
 
 Author:  yvarbev@redhat.com, gh:@yvarbanov
-Version: 25.07.01
+Version: 25.08.04
 """
 
 import rbd

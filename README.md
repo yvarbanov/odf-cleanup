@@ -221,55 +221,17 @@ python3 odf-cleanup.py
 cd odf-cleanup
 source env.sh
 # Edit env.sh with your specific values (CL_LAB not needed)
-python3 odf-oc-compare.py
+python3 utils/odf-oc-compare.py
+# if needed move the generated script next to odf-cleanup.py
 ```
 
-## ODF-OpenShift Comparison Tool
-
-The `odf-oc-compare.py` script compares active OpenShift namespaces with ODF RBD images to identify orphaned lab GUIDs. This helps discover storage resources that are no longer associated with active labs and can be safely cleaned up.
-
-### Key Features
-
-- **Namespace Analysis**: Discovers active lab GUIDs from OpenShift projects (pattern: `sandbox-{GUID}-*`)
-- **ODF Resource Discovery**: Analyzes volumes, CSI snapshots, and trash items
-- **Parentless CSI Snapshot Analysis**: Identifies potential boot/base images by analyzing children relationships
-- **Smart Ordering**: Prioritizes cleanup by complexity (volumes only → volumes+snapshots → volumes+snapshots+trash)
-- **Automated Script Generation**: Creates ready-to-run cleanup scripts
-
-### Workflow
-
-The comparison tool follows this logical workflow:
-
-```
-Workflow Step                     Implementation
--------------                     --------------
-compare                       →   run_comparison()
-get projects                  →   discover_namespace_guids()  
-get csi-snaps + analyze       →   discover_odf_guids() + _analyze_parentless_csi_snap()
-get volumes                   →   _extract_guid_from_image()
-compare guids                 →   compare_and_find_orphans()
-order for deletion            →   _order_guids_by_complexity()
-create script                 →   generate_cleanup_script()
-run cleanup                   →   Generated bash script
-```
-
-### Usage
-
+### ODF Cleanup Monitor
 ```console
+cd odf-cleanup
 source env.sh
-python3 odf-oc-compare.py
+# Edit env.sh with your specific values (CL_LAB not needed)
+python3 utils/odf-cleanup-monitor.py --format csv --csv failures.csv
 ```
-
-**Additional Requirements:**
-- Valid kubeconfig with access to OpenShift/Kubernetes cluster
-- `CL_LAB` environment variable not required (tool discovers all GUIDs)
-
-### Output
-
-The script generates:
-1. **Detailed comparison report** showing active vs orphaned GUIDs
-2. **Parentless CSI snapshot analysis** with safety recommendations  
-3. **Automated cleanup script** (`cleanup_orphaned_guids.sh`) ordered by complexity
 
 ## Troubleshooting
 
