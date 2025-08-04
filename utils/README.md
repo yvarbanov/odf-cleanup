@@ -109,5 +109,5 @@ pip install kubernetes rados rbd
 ## Documentation
 
 For detailed information:
-- **../Documentation/odf-oc-compare.md** - Complete comparison tool documentation
-- **../Documentation/odf-cleanup-monitor.md** - Complete monitoring tool documentation
+- [Complete comparison tool documentation](../Documentation/odf-oc-compare.md)
+- [Complete monitoring tool documentation](../Documentation/odf-cleanup-monitor.md)
