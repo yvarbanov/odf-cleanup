@@ -90,9 +90,9 @@ class OdfTree:
             elif not image.parent_name and image not in self.root_images:
                 self.root_images.append(image)
             elif image.parent_name and image.parent_name not in self.images:
-                # Parent doesn't exist in tree (likely in trash), treat volume as root
+                # Parent doesn't exist in tree (likely in trash), treat volume as root and put first
                 if image not in self.root_images:
-                    self.root_images.append(image)
+                    self.root_images.insert(0, image)
     
     def get_removal_order(self) -> List[OdfImage]:
         """Calculate the order in which images should be removed (children first)"""
@@ -260,12 +260,6 @@ class OdfCleaner:
         if additional_images:
             print(f"  + {len(additional_images)} missing descendants discovered")
         print(f"  Total: {len(all_discovered)} items")
-        
-        # Check dependencies
-        if self._active_to_trash_dependencies:
-            print(f"WARNING: {sum(len(deps) for deps in self._active_to_trash_dependencies.values())} images have trash dependencies")
-        else:
-            print("No active->trash dependencies found")
         
         return all_discovered
     
