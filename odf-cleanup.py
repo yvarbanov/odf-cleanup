@@ -189,7 +189,7 @@ class OdfCleaner:
             'trash_items_removed': 0,
             'failed_removals': []
         }
-        # Cache for dependency analysis
+        # Cache for dependency analysis (active parent->trash child)
         self._active_to_trash_dependencies = None
         # Track failed trash restorations
         self._failed_trash_restorations = set()
@@ -371,25 +371,49 @@ class OdfCleaner:
                         descendants = list(img.list_descendants())
                         
                         for desc in descendants:
-                            desc_name = desc.get('name', '') if isinstance(desc, dict) else str(desc)
+                            if isinstance(desc, dict):
+                                desc_name = desc.get('name') or desc.get('image') or desc.get('child') or str(desc)
+                            else:
+                                desc_name = str(desc)
                             if not desc_name:
                                 continue
                             
-                            # Handle trash descendants - track dependency only
+                            # Handle trash descendants - track dependency and update parent
                             if desc.get('trash', False):
                                 if image.name not in active_to_trash_deps:
                                     active_to_trash_deps[image.name] = []
                                 active_to_trash_deps[image.name].append(desc_name)
+                                
+                                # Also update parent relationship for trash item (only if no parent set)
+                                existing_images = discovered_images + all_additional
+                                for existing_img in existing_images:
+                                    if existing_img.name == desc_name:
+                                        if not existing_img.parent_name:
+                                            existing_img.parent_name = image.name
+                                            print(f"    Updated trash parent: {desc_name} -> {image.name}")
+                                        break
                                 continue
                             
                             # Handle active descendants - add to discovery
                             if desc_name not in discovered_names:
-                                new_image = self._create_image_from_rbd(desc_name)
+                                # Determine image type based on name
+                                desc_image_type = ImageType.CSI_SNAP if 'csi-snap' in desc_name else ImageType.VOLUME
+                                new_image = self._create_image_from_rbd(desc_name, desc_image_type)
                                 if new_image:
                                     new_image.parent_name = image.name
                                     current_batch.append(new_image)
                                     all_additional.append(new_image)
                                     discovered_names.add(desc_name)
+                            else:
+                                # Handle already-discovered descendant - update parent relationship (only if no parent set)
+                                # Find the existing image and update its parent
+                                existing_images = discovered_images + all_additional
+                                for existing_img in existing_images:
+                                    if existing_img.name == desc_name:
+                                        if not existing_img.parent_name:
+                                            existing_img.parent_name = image.name
+                                            print(f"    Updated parent: {desc_name} -> {image.name}")
+                                        break
                                     
                 except Exception as e:
                     debug = os.environ.get('DEBUG', 'false').lower() in ['true', '1', 'yes']
