@@ -89,6 +89,10 @@ class OdfTree:
                 parent.add_child(image)
             elif not image.parent_name and image not in self.root_images:
                 self.root_images.append(image)
+            elif image.parent_name and image.parent_name not in self.images:
+                # Parent doesn't exist in tree (likely in trash), treat volume as root
+                if image not in self.root_images:
+                    self.root_images.append(image)
     
     def get_removal_order(self) -> List[OdfImage]:
         """Calculate the order in which images should be removed (children first)"""
